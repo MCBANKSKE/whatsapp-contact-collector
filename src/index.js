@@ -29,7 +29,7 @@ const statusHost = process.env.WHATSAPP_STATUS_HOST || '127.0.0.1';
 const statusPort = Number(process.env.WHATSAPP_STATUS_PORT || 3000);
 const showTerminalQr = process.env.WHATSAPP_TERMINAL_QR === '1';
 const clearAuthOnDisconnect =
-    process.env.WHATSAPP_CLEAR_AUTH_ON_DISCONNECT !== '0';
+    process.env.WHATSAPP_CLEAR_AUTH_ON_DISCONNECT === '1';
 const configuredHistoryWaitTimeout = Number(
     process.env.WHATSAPP_HISTORY_WAIT_TIMEOUT_MS || 30000,
 );
@@ -327,11 +327,12 @@ function resetSessionState() {
     updateCollectionStatus();
 }
 
-function clearAuthSession() {
-    if (!clearAuthOnDisconnect) {
+function clearAuthSession({ force = false } = {}) {
+    if (!clearAuthOnDisconnect && !force) {
         console.warn(
-            'Automatic auth cleanup is disabled; the existing session '
-            + 'will be reused on reconnect.',
+            'Transient disconnect detected; preserving the existing auth '
+            + 'session. Set WHATSAPP_CLEAR_AUTH_ON_DISCONNECT=1 to force '
+            + 'session deletion.',
         );
         return false;
     }
@@ -519,6 +520,7 @@ async function startWhatsApp() {
             collector.setAccount(sock.user);
             updateRuntimeStatus({
                 connected: true,
+                lastError: null,
                 state: historyBuffer.isReady() ? 'collecting' : 'waiting_for_history',
             });
 
@@ -549,7 +551,14 @@ async function startWhatsApp() {
 
         currentQr = null;
         clearHistoryFallback();
-        updateRuntimeStatus({ connected: false, state: 'reconnecting' });
+        const statusCode = lastDisconnect?.error?.output?.statusCode;
+        const disconnectMessage = lastDisconnect?.error?.message
+            || (statusCode ? `Disconnect status ${statusCode}` : 'Connection closed');
+        updateRuntimeStatus({
+            connected: false,
+            lastError: disconnectMessage,
+            state: 'reconnecting',
+        });
         flushCollector();
 
         if (shuttingDown) {
@@ -566,31 +575,29 @@ async function startWhatsApp() {
             return;
         }
 
-        if (clearAuthSession()) {
-            console.log('Starting a fresh WhatsApp session in 60 seconds.');
-            scheduleReconnect();
-            return;
-        }
+        const loggedOut = statusCode === DisconnectReason.loggedOut;
+        const shouldDeleteSession = clearAuthOnDisconnect || loggedOut;
 
-        const statusCode = lastDisconnect?.error?.output?.statusCode;
+        if (shouldDeleteSession) {
+            const cleared = clearAuthSession({ force: loggedOut });
 
-        if (statusCode === DisconnectReason.loggedOut) {
-            updateRuntimeStatus({ connected: false, state: 'logged_out' });
-            console.log('\nWhatsApp session logged out.');
-
-            if (historyBuffer.isReady()) {
-                printCollectionStats('Final collection');
-            } else {
-                console.warn(
-                    'Initial history synchronization did not complete; '
-                    + 'no new phone-number CSV was written.',
-                );
+            if (cleared) {
+                console.log('Starting a fresh WhatsApp session in 60 seconds.');
+                scheduleReconnect();
+                return;
             }
 
-            return;
+            if (loggedOut) {
+                updateRuntimeStatus({ connected: false, state: 'logged_out' });
+                console.log('\nWhatsApp session logged out; auth cleanup failed.');
+                return;
+            }
         }
 
-        console.log('\nWhatsApp connection closed. Reconnecting in 60 seconds.');
+        console.log(
+            `\nWhatsApp connection closed (${disconnectMessage}). `
+            + 'Preserving auth and reconnecting in 60 seconds.',
+        );
         scheduleReconnect();
     });
 
