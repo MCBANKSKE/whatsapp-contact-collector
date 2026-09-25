@@ -22,6 +22,8 @@ const DASHBOARD_HTML = `<!doctype html>
     button, a.button { border: 0; border-radius: 8px; padding: 10px 16px; background: #2f81f7; color: white; cursor: pointer; text-decoration: none; font: inherit; }
     button:disabled, a.disabled { opacity: .45; cursor: not-allowed; pointer-events: none; }
     #qr { display: block; max-width: 360px; width: 100%; margin: 16px auto; background: white; padding: 12px; border-radius: 8px; }
+    .login-row { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 12px; }
+    input { min-width: 220px; flex: 1; border: 1px solid #465563; border-radius: 8px; padding: 10px 12px; background: #101418; color: #edf2f7; font: inherit; }
     .muted { color: #9ba8b5; }
     .error { color: #ff9b9b; white-space: pre-wrap; }
   </style>
@@ -47,6 +49,14 @@ const DASHBOARD_HTML = `<!doctype html>
     <img id="qr" alt="WhatsApp pairing QR code" hidden>
     <div id="qrMessage" class="muted">Waiting for a QR code…</div>
   </div>
+  <div class="card" style="margin-top: 12px">
+    <div class="label">Or request a phone-number pairing code</div>
+    <form id="pairingForm" class="login-row">
+      <input id="phoneNumber" type="tel" inputmode="tel" autocomplete="tel" placeholder="Full international number, e.g. 15550000000" required>
+      <button type="submit">Request pairing code</button>
+    </form>
+    <div id="pairingResult" class="muted" style="margin-top: 10px"></div>
+  </div>
   <p id="error" class="error"></p>
 </main>
 <script>
@@ -57,12 +67,14 @@ const DASHBOARD_HTML = `<!doctype html>
   };
   const setText = (id, value) => { document.getElementById(id).textContent = value; };
   async function refresh() {
+    let connected = false;
     try {
       const response = await fetch(withToken('/health'), { cache: 'no-store' });
       if (!response.ok) throw new Error('Status request failed: ' + response.status);
       const data = await response.json();
+      connected = Boolean(data.connected);
       setText('state', data.state || 'unknown');
-      setText('connected', data.connected ? 'Yes' : 'No');
+      setText('connected', connected ? 'Yes' : 'No');
       setText('history', data.historySyncComplete ? 'Yes' : 'No');
       setText('resolved', data.resolvedPhoneNumbers || 0);
       setText('unresolved', data.unresolvedLids || 0);
@@ -80,18 +92,64 @@ const DASHBOARD_HTML = `<!doctype html>
       } else {
         qr.hidden = true;
         qr.removeAttribute('src');
-        qrMessage.textContent = data.connected ? 'Connected; no pairing QR is active.' : 'Waiting for a QR code…';
+        qrMessage.textContent = connected ? 'Connected; no pairing QR is active.' : 'Waiting for a QR code…';
       }
     } catch (error) {
       setText('error', error.message);
+    } finally {
+      clearTimeout(refresh.timer);
+      refresh.timer = setTimeout(refresh, connected ? 2000 : 500);
     }
   }
-  document.getElementById('refresh').addEventListener('click', refresh);
+  document.getElementById('refresh').addEventListener('click', () => {
+    clearTimeout(refresh.timer);
+    refresh();
+  });
+  document.getElementById('pairingForm').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const result = document.getElementById('pairingResult');
+    const phoneNumber = document.getElementById('phoneNumber').value.trim();
+    result.textContent = 'Requesting pairing code…';
+    try {
+      const response = await fetch(withToken('/pairing-code'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phoneNumber }),
+      });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error || 'Pairing code request failed');
+      result.textContent = 'Pairing code: ' + body.code;
+    } catch (error) {
+      result.textContent = error.message;
+    }
+  });
+  refresh.timer = undefined;
   refresh();
-  setInterval(refresh, 2000);
 </script>
 </body>
 </html>`;
+
+function readJsonBody(request) {
+    return new Promise((resolve, reject) => {
+        let body = '';
+        request.setEncoding('utf8');
+        request.on('data', (chunk) => {
+            body += chunk;
+            if (body.length > 4096) {
+                reject(new Error('Request body is too large'));
+                request.destroy();
+            }
+        });
+        request.on('end', () => {
+            try {
+                resolve(JSON.parse(body || '{}'));
+            } catch {
+                reject(new Error('Request body must be valid JSON'));
+            }
+        });
+        request.on('error', reject);
+    });
+}
 
 function createStatusServer({
     host,
@@ -99,6 +157,7 @@ function createStatusServer({
     getStatus,
     getQrData = () => null,
     getCsvPath = () => null,
+    requestPairingCode = null,
     accessToken = process.env.WHATSAPP_STATUS_TOKEN || '',
 }) {
     if (!Number.isInteger(port) || port < 0 || port > 65535) {
@@ -137,12 +196,29 @@ function createStatusServer({
             return;
         }
 
-        if (request.method !== 'GET') {
+        const isPairingCodeRequest = url.pathname === '/pairing-code';
+
+        if (
+            request.method !== 'GET'
+            && !(isPairingCodeRequest && request.method === 'POST')
+        ) {
             sendJson(response, 405, { error: 'Method not allowed' });
             return;
         }
 
         try {
+            if (isPairingCodeRequest) {
+                if (typeof requestPairingCode !== 'function') {
+                    sendJson(response, 501, { error: 'Phone pairing is not available' });
+                    return;
+                }
+
+                const body = await readJsonBody(request);
+                const code = await requestPairingCode(body.phoneNumber);
+                sendJson(response, 200, { code });
+                return;
+            }
+
             if (url.pathname === '/') {
                 response.writeHead(200, {
                     'Cache-Control': 'no-store',

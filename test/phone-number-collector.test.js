@@ -359,3 +359,28 @@ test('status server protects routes when a token is configured', async (t) => {
     assert.equal(denied.status, 401);
     assert.equal(allowed.status, 200);
 });
+
+
+test('status server requests a phone-number pairing code', async (t) => {
+    const service = createStatusServer({
+        host: '127.0.0.1',
+        port: 0,
+        getStatus: () => ({ state: 'waiting_for_qr' }),
+        requestPairingCode: async (phoneNumber) => {
+            assert.equal(phoneNumber, '+1 555 000 0024');
+            return 'ABCD-EFGH';
+        },
+    });
+
+    t.after(() => service.stop());
+
+    const address = await service.start();
+    const response = await fetch(`http://127.0.0.1:${address.port}/pairing-code`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phoneNumber: '+1 555 000 0024' }),
+    });
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { code: 'ABCD-EFGH' });
+});

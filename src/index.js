@@ -56,6 +56,7 @@ let shuttingDown = false;
 let selfMessageSent = false;
 let selfMessageInFlight = false;
 let completionInProgress = false;
+let pairingCodePending = false;
 let historyFallbackTimer = null;
 
 function updateRuntimeStatus(patch = {}) {
@@ -68,6 +69,7 @@ function getRuntimeStatus() {
     return {
         ...runtimeStatus,
         qrAvailable: Boolean(currentQr),
+        pairingCodePending,
         csvReady: fs.existsSync(outputPath),
     };
 }
@@ -87,6 +89,39 @@ function formatStatusHost(host) {
         : host;
 }
 
+function normalizePairingPhoneNumber(value) {
+    const phoneNumber = String(value || '').replace(/\D/g, '');
+
+    if (!/^\d{7,15}$/.test(phoneNumber)) {
+        throw new Error('Enter a full international phone number including country code.');
+    }
+
+    return phoneNumber;
+}
+
+async function requestPhonePairingCode(value) {
+    if (!activeSocket || typeof activeSocket.requestPairingCode !== 'function') {
+        throw new Error('WhatsApp socket is not ready yet. Wait for the QR or connection to start.');
+    }
+
+    if (activeSocket.authState?.creds?.registered) {
+        throw new Error('Phone pairing is only available for a new, unregistered session.');
+    }
+
+    const phoneNumber = normalizePairingPhoneNumber(value);
+    pairingCodePending = true;
+
+    try {
+        const code = await activeSocket.requestPairingCode(phoneNumber);
+        updateRuntimeStatus({ lastError: null, state: 'waiting_for_pairing_code' });
+        console.log('Phone-number pairing code requested through the web dashboard.');
+        return code;
+    } catch (error) {
+        pairingCodePending = false;
+        throw error;
+    }
+}
+
 async function startStatusServer() {
     if (statusServer) {
         return;
@@ -99,6 +134,7 @@ async function startStatusServer() {
             getStatus: getRuntimeStatus,
             getQrData: () => currentQr,
             getCsvPath: () => outputPath,
+            requestPairingCode: requestPhonePairingCode,
         });
         const address = await statusServer.start();
         const endpoint = `http://${formatStatusHost(statusHost)}:${address.port}`;
@@ -280,6 +316,7 @@ function resetSessionState() {
     selfMessageSent = false;
     selfMessageInFlight = false;
     completionInProgress = false;
+    pairingCodePending = false;
     updateRuntimeStatus({
         state: 'awaiting_qr',
         connected: false,
@@ -322,7 +359,7 @@ function scheduleReconnect() {
     reconnectTimer = setTimeout(() => {
         reconnectTimer = null;
         startWhatsApp().catch(handleFatalError);
-    }, 2000);
+    }, 60000);
 }
 
 function prepareHistorySync(state) {
@@ -476,6 +513,9 @@ async function startWhatsApp() {
 
         if (connection === 'open') {
             currentQr = null;
+            if (sock.authState?.creds?.registered) {
+                pairingCodePending = false;
+            }
             collector.setAccount(sock.user);
             updateRuntimeStatus({
                 connected: true,
@@ -516,8 +556,18 @@ async function startWhatsApp() {
             return;
         }
 
+        if (pairingCodePending) {
+            updateRuntimeStatus({ state: 'waiting_for_pairing_code' });
+            console.log(
+                'Phone pairing is in progress; preserving the session and '
+                + 'reconnecting in 60 seconds.',
+            );
+            scheduleReconnect();
+            return;
+        }
+
         if (clearAuthSession()) {
-            console.log('Starting a fresh WhatsApp session in 2 seconds.');
+            console.log('Starting a fresh WhatsApp session in 60 seconds.');
             scheduleReconnect();
             return;
         }
@@ -540,7 +590,7 @@ async function startWhatsApp() {
             return;
         }
 
-        console.log('\nWhatsApp connection closed. Reconnecting in 2 seconds.');
+        console.log('\nWhatsApp connection closed. Reconnecting in 60 seconds.');
         scheduleReconnect();
     });
 
@@ -560,6 +610,7 @@ async function shutdown(signal) {
     }
 
     shuttingDown = true;
+    pairingCodePending = false;
     updateRuntimeStatus({ connected: false, state: 'stopped' });
 
     if (reconnectTimer) {

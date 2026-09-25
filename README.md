@@ -1,13 +1,5 @@
 <div align="center">
 
-# 📱 WhatsApp Contact Collector
-
-**A privacy-conscious Baileys collector for resolved phone numbers from your direct WhatsApp chats.**
-
-[Node.js](https://nodejs.org/) · [Baileys](https://github.com/WhiskeySockets/Baileys) · CommonJS · CSV export
-
-</div>
-
 ---
 
 ## ✨ What it does
@@ -34,16 +26,16 @@ The app provides:
 
 The collector intentionally includes only counterpart phone numbers from one-to-one chats.
 
-| Source | Included? | Reason |
-|---|:---:|---|
-| Direct PN chat (`@s.whatsapp.net`) | ✅ | A real direct-chat phone JID |
-| Direct LID chat (`@lid`) | ✅ | Resolved when WhatsApp supplies a PN mapping |
-| Group chats (`@g.us`) | ❌ | Groups are outside the requested scope |
-| Status/broadcast chats | ❌ | Not direct chats |
-| Newsletters | ❌ | Not direct chats |
-| Numbers written in message text | ❌ | Text is not parsed |
-| Numbers inside contact cards | ❌ | Contact-card content is not collected |
-| The logged-in account | ❌ | Prevented explicitly |
+| Source                               | Included? | Reason                                       |
+| ------------------------------------ | :-------: | -------------------------------------------- |
+| Direct PN chat (`@s.whatsapp.net`) |    ✅    | A real direct-chat phone JID                 |
+| Direct LID chat (`@lid`)           |    ✅    | Resolved when WhatsApp supplies a PN mapping |
+| Group chats (`@g.us`)              |    ❌    | Groups are outside the requested scope       |
+| Status/broadcast chats               |    ❌    | Not direct chats                             |
+| Newsletters                          |    ❌    | Not direct chats                             |
+| Numbers written in message text      |    ❌    | Text is not parsed                           |
+| Numbers inside contact cards         |    ❌    | Contact-card content is not collected        |
+| The logged-in account                |    ❌    | Prevented explicitly                         |
 
 The CSV contains **resolved phone numbers only**. Unresolved WhatsApp LIDs are tracked as a count in the dashboard and terminal logs; they are never written as if they were real phone numbers.
 
@@ -88,14 +80,14 @@ The app does not write a new partial CSV before the history barrier completes. A
 ### Install
 
 ```bash
-cd /home/mark/Projects/whatsapp-contact-collector
+cd  whatsapp-contact-collector
 npm install
 ```
 
 ### Start locally
 
 ```bash
-cd /home/mark/Projects/whatsapp-contact-collector
+cd whatsapp-contact-collector
 npm start
 ```
 
@@ -105,7 +97,7 @@ Open the dashboard on the same computer:
 http://127.0.0.1:3000/
 ```
 
-The QR code will appear on the dashboard when WhatsApp emits a pairing QR. The terminal no longer prints the QR by default.
+The QR code will appear on the dashboard when WhatsApp emits a pairing QR. The terminal no longer prints the QR by default. Before a connection is established, the dashboard polls the QR/status endpoint every 500ms; after connecting, it settles to a 2-second status refresh.
 
 To also print the QR in the terminal:
 
@@ -127,7 +119,7 @@ WHATSAPP_STATUS_PORT=3000
 ### Run on a private network
 
 ```bash
-cd /home/mark/Projects/whatsapp-contact-collector
+cd whatsapp-contact-collector
 
 WHATSAPP_STATUS_HOST=0.0.0.0 \
 WHATSAPP_STATUS_PORT=3000 \
@@ -143,16 +135,23 @@ http://SERVER_IP:3000/?token=use-a-long-random-token
 
 ### Routes
 
-| Route | Purpose |
-|---|---|
-| `/` | HTML dashboard with summary, QR, and download button |
-| `/health` | JSON runtime status |
-| `/qr.png` | Current QR code as a PNG image |
-| `/qr` | Alias for `/qr.png` |
-| `/download` | Download the current CSV as an attachment |
-| `/csv` | Alias for `/download` |
+| Route         | Purpose                                              |
+| ------------- | ---------------------------------------------------- |
+| `/`         | HTML dashboard with summary, QR, and download button |
+| `/health`   | JSON runtime status                                  |
+| `/qr.png`   | Current QR code as a PNG image                       |
+| `/qr`       | Alias for`/qr.png`                                 |
+| `/download` | Download the current CSV as an attachment            |
+| `/csv`      | Alias for`/download`                               |
+| `/pairing-code` | `POST` a phone number to request a Baileys pairing code |
 
 The QR is generated locally by the `qrcode` package. No external QR service is used.
+
+### Login with a phone-number pairing code
+
+The dashboard also provides a phone-number pairing option as an alternative to scanning the QR. Enter the full international number, including country code, then select **Request pairing code**. Baileys sends the code to the active WhatsApp socket; enter that code in WhatsApp under **Linked devices**.
+
+The phone-number code is requested through the protected dashboard endpoint and is never written to the status JSON or logs. WhatsApp may rate-limit pairing-code requests or require the QR flow first; the dashboard will show the returned error if that happens.
 
 ### Protect the dashboard
 
@@ -185,11 +184,11 @@ phone_number,saved_contact,name
 15550000003,true,"Doe, Jane"
 ```
 
-| Column | Meaning |
-|---|---|
-| `phone_number` | Resolved, digits-only WhatsApp phone number |
-| `saved_contact` | `true` when WhatsApp supplied a saved-contact name |
-| `name` | Contact name supplied by WhatsApp; CSV-escaped when necessary |
+| Column            | Meaning                                                       |
+| ----------------- | ------------------------------------------------------------- |
+| `phone_number`  | Resolved, digits-only WhatsApp phone number                   |
+| `saved_contact` | `true` when WhatsApp supplied a saved-contact name          |
+| `name`          | Contact name supplied by WhatsApp; CSV-escaped when necessary |
 
 Rows are sorted numerically by `phone_number`. The writer uses an atomic temporary-file rename and restricts new files to owner-only permissions on supported systems.
 
@@ -246,20 +245,22 @@ By default, when the WhatsApp socket closes, the app:
 1. Deletes the entire `auth` directory.
 2. Resets the history-sync barrier.
 3. Resets the one-time self-message state.
-4. Starts a fresh session.
+4. Waits 60 seconds before starting a fresh session.
 5. Makes a new QR code available in the dashboard.
+
+If a phone-number pairing code is currently pending, the app preserves the auth state instead of deleting it. This is necessary because Baileys may close the socket as part of the phone-linking handshake.
 
 This behavior is enabled because it allows the app to link a different WhatsApp account without manually deleting session files.
 
 ### Keep the session on disconnect
 
-To preserve the auth directory and allow normal reconnection to the same account:
+Normal reconnects wait 60 seconds before creating a new socket. To preserve the auth directory and allow normal reconnection to the same account:
 
 ```bash
 WHATSAPP_CLEAR_AUTH_ON_DISCONNECT=0 npm start
 ```
 
-> Automatic auth deletion is irreversible. Intentional shutdown with `Ctrl+C`/`SIGTERM` does not delete the session, but an actual socket close does when the default setting is enabled.
+> Automatic auth deletion is irreversible. Intentional shutdown with `Ctrl+C`/`SIGTERM` does not delete the session. A normal socket close deletes it when the default setting is enabled, except while a phone pairing code is pending.
 
 The CSV is not deleted automatically when auth is cleared. To keep separate account results, archive it before linking another account:
 
@@ -281,7 +282,7 @@ npm start
 ## 🗂️ Project layout
 
 ```text
-/home/mark/Projects/whatsapp-contact-collector/
+/whatsapp-contact-collector/
 ├── src/
 │   ├── index.js                    # App lifecycle, sync gate, self-message
 │   ├── phone-number-collector.js   # JID resolution, metadata, CSV persistence
@@ -298,7 +299,7 @@ npm start
 └── README.md
 ```
 
-Sensitive/generated directories are ignored by Git through `/home/mark/Projects/whatsapp-contact-collector/.gitignore`.
+Sensitive/generated directories are ignored by Git through `/whatsapp-contact-collector/.gitignore`.
 
 ---
 
@@ -307,7 +308,7 @@ Sensitive/generated directories are ignored by Git through `/home/mark/Projects/
 Run the automated test suite:
 
 ```bash
-cd /home/mark/Projects/whatsapp-contact-collector
+cd /whatsapp-contact-collector
 npm test
 ```
 
@@ -329,7 +330,7 @@ Coverage includes:
 Optional syntax check:
 
 ```bash
-for file in /home/mark/Projects/whatsapp-contact-collector/src/*.js; do
+for file in /whatsapp-contact-collector/src/*.js; do
   node --check "$file" || exit 1
 done
 ```
