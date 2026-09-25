@@ -1,0 +1,7 @@
+node_modules/
+auth/
+data/
+logs/
+exports/
+.env
+.env.*
